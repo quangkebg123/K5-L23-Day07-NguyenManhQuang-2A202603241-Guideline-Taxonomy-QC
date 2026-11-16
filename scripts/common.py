@@ -5,7 +5,10 @@ Học viên KHÔNG cần sửa file này. Nhóm chỉ sửa submission/taxonomy.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import math
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +16,11 @@ from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 TAXONOMY_PATH = ROOT / "submission" / "taxonomy.json"
+FINAL_TAXONOMY_PATH = ROOT / "submission" / "taxonomy_v1.1.json"
+GUIDELINE_PATH = ROOT / "submission" / "guidelines" / "guideline_v1.0_agreed.md"
+FINAL_GUIDELINE_PATH = ROOT / "submission" / "guidelines" / "guideline_v1.1_calibrated.md"
+ASSIGNMENT_PATH = ROOT / "submission" / "qc" / "assignment.csv"
+MEMBER_RE = re.compile(r"\d{3}", re.ASCII)
 LABELS_DIR = ROOT / "submission" / "labels"
 QC_DIR = ROOT / "submission" / "qc"
 IMAGES_DIR = ROOT / "data" / "images"
@@ -79,14 +87,51 @@ class Taxonomy:
         return norm_value
 
 
-def load_taxonomy() -> Taxonomy:
-    if not TAXONOMY_PATH.exists():
-        die(f"Không thấy {TAXONOMY_PATH.relative_to(ROOT)}. Hãy chạy script từ thư mục gốc của repo.")
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_taxonomy(path: Path = TAXONOMY_PATH) -> Taxonomy:
+    from jsonschema import Draft202012Validator
+
     try:
-        return Taxonomy(json.loads(TAXONOMY_PATH.read_text(encoding="utf8")))
-    except (json.JSONDecodeError, KeyError) as e:
-        die(f"taxonomy.json bị lỗi cú pháp/thiếu trường ({e}). Kiểm tra dấu phẩy, ngoặc kép.")
-        raise
+        data = json.loads(path.read_text(encoding="utf8"))
+        schema = json.loads((ROOT / "schemas" / "taxonomy.schema.json").read_text(encoding="utf8"))
+    except (OSError, ValueError) as exc:
+        die(f"Không đọc được taxonomy {rel(path)}: {exc}")
+    errors = list(Draft202012Validator(schema).iter_errors(data))
+    if errors:
+        die(f"{rel(path)}: " + "\n".join(f"{e.json_path}: {e.message}" for e in errors))
+    tax = Taxonomy(data)
+    if len(tax.classes) != len(set(tax.classes)) or tax.ignore not in tax.classes:
+        die("Tên lớp phải duy nhất và ignore_class phải có trong classes.")
+    if len(tax.attrs) != len(data["attributes"]):
+        die("Tên thuộc tính phải duy nhất.")
+    for name, attr in tax.attrs.items():
+        if attr["type"] == "select" and (
+            not tax.valid(name, tax.default(name))
+            or len({value.lower() for value in attr["values"]}) != len(attr["values"])
+        ):
+            die(f"{name}: default phải thuộc values và các mức phải phân biệt được.")
+    if tax.attrs.get("can_review", {}).get("type") != "checkbox":
+        die("Giữ thuộc tính can_review kiểu checkbox.")
+    return tax
+
+
+def final_taxonomy_path() -> Path:
+    return FINAL_TAXONOMY_PATH if FINAL_TAXONOMY_PATH.exists() else TAXONOMY_PATH
+
+
+def input_hashes() -> dict:
+    paths = [TAXONOMY_PATH, GUIDELINE_PATH, ASSIGNMENT_PATH, *list_label_files()]
+    paths.extend(IMAGES_DIR / name for name in sorted(require_assignment()))
+    issues = QC_DIR / "image_issues.csv"
+    if issues.exists():
+        paths.append(issues)
+    missing = [rel(path) for path in paths if not path.is_file()]
+    if missing:
+        raise ValueError("Thiếu dữ liệu đầu vào: " + ", ".join(missing))
+    return {rel(path): digest(path) for path in paths}
 
 
 # --------------------------------------------------------------------------- hình học
@@ -142,38 +187,50 @@ class Obj:
 @dataclass
 class LabelFile:
     path: Path
-    mshv: str
-    name: str
+    member: str
     images: Dict[str, Tuple[int, int]]          # basename -> (w, h)
     objects: Dict[str, List[Obj]]               # basename -> objects (kể cả ignore_region)
     problems: List[str] = field(default_factory=list)
 
 
-def mshv_of(path: Path) -> str:
-    return path.stem.split("_", 1)[0]
-
-
 def load_coco(path: Path, tax: Taxonomy) -> LabelFile:
     data = json.loads(Path(path).read_text(encoding="utf8"))
-    cats = {c["id"]: c["name"] for c in data.get("categories", [])}
+    if not isinstance(data, dict) or any(not isinstance(data.get(key), list)
+                                         for key in ("images", "categories", "annotations")):
+        raise ValueError("COCO cần mảng images, categories và annotations.")
+    cats = {c["id"]: c["name"] for c in data["categories"]}
+    if len(cats) != len(data["categories"]) or len(set(cats.values())) != len(cats):
+        raise ValueError("COCO có ID hoặc tên category trùng.")
     imgs = {}
-    lf = LabelFile(Path(path), mshv_of(Path(path)), Path(path).stem, {}, {})
+    lf = LabelFile(Path(path), Path(path).stem, {}, {})
     for im in data.get("images", []):
         base = Path(im["file_name"]).name
-        if base in lf.images:
-            lf.problems.append(f"ảnh {base} xuất hiện 2 lần trong file")
+        if base in lf.images or im["id"] in imgs:
+            lf.problems.append(f"ảnh {base} có tên hoặc image_id trùng")
         imgs[im["id"]] = base
         lf.images[base] = (int(im.get("width", 0)), int(im.get("height", 0)))
         lf.objects.setdefault(base, [])
-    for an in data.get("annotations", []):
+    annotation_ids = set()
+    for an in data["annotations"]:
+        ann_id = an["id"]
+        if type(ann_id) is not int or ann_id in annotation_ids:
+            lf.problems.append(f"annotation_id không hợp lệ hoặc trùng: {ann_id}")
+        annotation_ids.add(ann_id)
         base = imgs.get(an.get("image_id"))
         if base is None:
             lf.problems.append(f"annotation {an.get('id')} trỏ tới image_id không có trong 'images'")
             continue
         cls = cats.get(an.get("category_id"), f"?category_id={an.get('category_id')}")
         raw = an.get("attributes", {}) or {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"annotation {ann_id}: attributes phải là object.")
+        bbox = an["bbox"]
+        if not isinstance(bbox, list) or len(bbox) != 4 or any(
+            type(coord) not in (int, float) or not math.isfinite(coord) for coord in bbox
+        ):
+            raise ValueError(f"annotation {ann_id}: bbox phải gồm bốn số hữu hạn.")
         attrs = {n: tax.norm_attr(n, raw.get(n)) for n in tax.attrs}
-        lf.objects[base].append(Obj(an.get("id", 0), cls, xywh_to_xyxy(an["bbox"]), attrs, raw))
+        lf.objects[base].append(Obj(ann_id, cls, xywh_to_xyxy(bbox), attrs, raw))
     return lf
 
 
@@ -185,24 +242,97 @@ def load_all_labels(tax: Taxonomy) -> Dict[str, LabelFile]:
     files = list_label_files()
     if not files:
         die("Chưa có file nhãn nào trong submission/labels/. Mỗi thành viên export COCO 1.0 từ CVAT, "
-            "đặt tên <MSHV>_<HoTen>.json rồi bỏ vào đó.")
+            "đặt tên theo mã, ví dụ 101.json.")
     out: Dict[str, LabelFile] = {}
     for p in files:
+        if not MEMBER_RE.fullmatch(p.stem):
+            die(f"{p.name}: đặt tên theo mã ba chữ số, ví dụ 101.json.")
         try:
             lf = load_coco(p, tax)
         except Exception as e:  # noqa
             die(f"Không đọc được {p.name}: {e}. Chạy `python scripts/validate_labels.py` để xem chi tiết.")
             raise
-        out[lf.mshv] = lf
+        if lf.member in out:
+            die(f"Trùng file nhãn cho mã thành viên {lf.member}.")
+        out[lf.member] = lf
     return out
 
 
 def load_assignment() -> Optional[Dict[str, List[str]]]:
-    p = QC_DIR / "assignment.csv"
-    if not p.exists():
+    if not ASSIGNMENT_PATH.exists():
         return None
-    with p.open(encoding="utf8", newline="") as f:
-        return {r["image"]: [x for x in r["annotators"].split("|") if x] for r in csv.DictReader(f)}
+    assignment = {}
+    known = set(list_images())
+    for row in read_csv(ASSIGNMENT_PATH):
+        image = row.get("image")
+        codes = (row.get("annotators") or "").split("|")
+        if image not in known or image in assignment:
+            die(f"assignment.csv: ảnh không hợp lệ hoặc trùng: {image}.")
+        if len(set(codes)) != len(codes) or not all(MEMBER_RE.fullmatch(code) for code in codes):
+            die(f"assignment.csv: mã thành viên sai hoặc trùng ở {image}.")
+        if row.get("n_annotators") != str(len(codes)):
+            die(f"assignment.csv: n_annotators không khớp ở {image}.")
+        assignment[image] = codes
+    members = {code for codes in assignment.values() for code in codes}
+    if not 2 <= len(members) <= 5:
+        die("assignment.csv phải có từ 2 đến 5 thành viên.")
+    minimum = 3 if len(members) == 5 else 2
+    if any(len(codes) < minimum for codes in assignment.values()):
+        die(f"assignment.csv: mỗi ảnh cần ít nhất {minimum} lượt gán.")
+    return assignment
+
+
+def require_assignment() -> Dict[str, List[str]]:
+    assignment = load_assignment()
+    if assignment is None:
+        die("Thiếu assignment.csv. Chạy split_assign.py trước.")
+    return assignment
+
+
+def label_errors(labels: LabelFile, tax: Taxonomy) -> List[str]:
+    from PIL import Image
+
+    errors = list(labels.problems)
+    for image, objects in labels.objects.items():
+        width, height = labels.images[image]
+        try:
+            with Image.open(IMAGES_DIR / image) as source:
+                source.load()
+                if source.size != (width, height):
+                    errors.append(f"{image}: kích thước COCO lệch ảnh gốc.")
+        except OSError:
+            errors.append(f"{image}: không đọc được ảnh gốc.")
+        for obj in objects:
+            tag = f"{image} #{obj.id}"
+            if obj.cls not in tax.classes:
+                errors.append(f"{tag}: lớp '{obj.cls}' ngoài taxonomy.")
+                continue
+            x1, y1, x2, y2 = obj.box
+            if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+                errors.append(f"{tag}: bbox không hợp lệ hoặc vượt ảnh.")
+            if obj.cls == tax.ignore:
+                continue
+            for name, attr in tax.attrs.items():
+                if name not in obj.raw_attrs or obj.raw_attrs[name] is None:
+                    errors.append(f"{tag}: thiếu thuộc tính '{name}'.")
+                elif not tax.valid(name, obj.attrs[name]) or (
+                    attr["type"] == "checkbox"
+                    and str(obj.raw_attrs[name]).strip().lower()
+                    not in {"true", "false", "1", "0", "yes", "no", "on", "off", "1.0", "0.0"}
+                ):
+                    errors.append(f"{tag}: thuộc tính '{name}' không hợp lệ.")
+    return errors
+
+
+def require_valid_labels(path: Path, tax: Taxonomy) -> LabelFile:
+    try:
+        labels = load_coco(path, tax)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        die(f"Không đọc được {rel(path)}: {exc}")
+    errors = label_errors(labels, tax)
+    if errors:
+        die(f"{rel(path)}:\n" + "\n".join(errors))
+    return labels
 
 
 def list_images() -> List[str]:

@@ -14,7 +14,7 @@ import argparse
 from PIL import Image
 
 from common import (IMAGES_DIR, QC_DIR, WORK_DIR, annotators_of_image, die, list_images, load_all_labels,
-                    load_assignment, load_coco, load_taxonomy, read_flagged, rel)
+                    final_taxonomy_path, load_assignment, load_coco, load_taxonomy, read_flagged, rel)
 from drawing import PALETTE, draw_layers
 
 
@@ -24,13 +24,15 @@ def main() -> None:
                     help="'flagged' | 'all' | danh sách tên ảnh (VD: img_003.jpg)")
     ap.add_argument("--source", choices=["labels", "consensus", "final"], default="labels")
     args = ap.parse_args()
-    tax = load_taxonomy()
+    tax = load_taxonomy(final_taxonomy_path()) if args.source == "final" else load_taxonomy()
 
     if args.images == ["flagged"]:
+        if not (QC_DIR / "flagged_images.txt").is_file():
+            die("Chưa có flagged_images.txt. Chạy python scripts/qc_compare.py trước.")
         names = read_flagged()
         if not names:
-            die("Chưa có submission/qc/flagged_images.txt (hoặc rỗng). Chạy `python scripts/qc_compare.py` trước, "
-                "hoặc chỉ định ảnh: --images img_003.jpg")
+            print("Không có ảnh bị cờ. Dùng --images img_017.jpg để xem ca tham chiếu nếu ảnh thuộc lô.")
+            return
     elif args.images == ["all"]:
         names = list_images()
     else:
@@ -54,7 +56,7 @@ def main() -> None:
             print(f"  bỏ qua {img}: không có trong data/images/")
             continue
         if args.source == "labels":
-            layers = [(m + " - " + files[m].name.split("_", 1)[-1], PALETTE[i % len(PALETTE)], files[m].objects[img])
+            layers = [(m, PALETTE[i % len(PALETTE)], files[m].objects[img])
                       for i, m in enumerate(annotators_of_image(files, img, assignment))]
         else:
             layers = [(args.source, PALETTE[0], one.objects.get(img, []))]

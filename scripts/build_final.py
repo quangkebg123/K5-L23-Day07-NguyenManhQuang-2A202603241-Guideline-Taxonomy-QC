@@ -1,105 +1,94 @@
-"""Gộp nhãn cuối sau calibration: ảnh không lệch lấy từ đồng thuận, ảnh bị cờ lấy từ bản đã calibration.
-
-Chuẩn bị:
-  1) Họp calibration, ghi mỗi quyết định MỘT dòng vào submission/qc/calibration_decisions.csv
-     (lần đầu chạy script sẽ tự tạo file mẫu để điền).
-  2) Sửa lại các ảnh bị cờ trong CVAT theo quyết định, export COCO 1.0 -> lưu thành
-     submission/qc/labels_calibrated_flagged.json (chỉ cần chứa các ảnh bị cờ).
-
-    python scripts/build_final.py
-"""
+"""Gộp nhãn sau calibration, xác thực phạm vi và ghi hồ sơ bàn giao máy đọc được."""
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
-from common import (QC_DIR, build_coco, die, load_coco, load_taxonomy, make_ann, read_csv, read_flagged, rel,
-                    write_csv, xyxy_to_xywh)
-
-DEC_COLS = ["case_id", "image", "quyet_dinh", "quy_tac_ghi_vao_guideline", "phien_ban_guideline", "nguoi_chot"]
+from calibration import (CALIBRATION_CONTEXT_PATH, GUIDELINE_CHANGE_PATH, calibration_export_path,
+                         calibration_scope, require_iaa)
+from common import (FINAL_GUIDELINE_PATH, IMAGES_DIR, QC_DIR, ROOT, build_coco, digest, die,
+                    final_taxonomy_path, make_ann, read_csv, rel, require_valid_labels, write_csv, xyxy_to_xywh)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--calibrated", default=str(QC_DIR / "labels_calibrated_flagged.json"),
-                    help="COCO sau calibration (chỉ ảnh bị cờ)")
-    args = ap.parse_args()
-    tax = load_taxonomy()
-    cons_p, cand_p = QC_DIR / "consensus_draft.json", QC_DIR / "calibration_candidates.csv"
-    if not cons_p.exists():
-        die("Chưa có consensus_draft.json. Chạy `python scripts/qc_compare.py` trước.")
-    flagged = read_flagged()
-    dec_p = QC_DIR / "calibration_decisions.csv"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--calibrated", type=Path,
+                        help="COCO sau sửa có đúng tên phiên bản do prepare_calibration.py in ra.")
+    args = parser.parse_args()
+    try:
+        require_iaa()
+    except (OSError, ValueError) as exc:
+        die(str(exc))
+    prior, tax, scope, batch = calibration_scope()
+    consensus = require_valid_labels(QC_DIR / "consensus_draft.json", prior)
+    if set(consensus.images) != batch:
+        die("Ảnh đồng thuận không khớp lô đã phân công.")
+    corrected = None
+    if scope:
+        expected = calibration_export_path(scope)
+        corrected_path = (args.calibrated or expected).resolve()
+        if not corrected_path.is_relative_to(QC_DIR.resolve()) or corrected_path.name != expected.name:
+            die(f"COCO sau sửa không khớp phiên bản hiện tại. Dùng {rel(expected)}.")
+        if not corrected_path.is_file():
+            die(f"Thiếu COCO sau sửa: {rel(expected)}. Chạy prepare_calibration.py để xem phạm vi.")
+        corrected = require_valid_labels(corrected_path, tax)
+        if set(corrected.images) != scope:
+            die(f"COCO sau sửa thiếu {sorted(scope - corrected.images.keys())}, "
+                f"thừa {sorted(corrected.images.keys() - scope)}.")
 
-    if flagged and not dec_p.exists():
-        rows = [{"case_id": c["case_id"], "image": c["image"]} for c in read_csv(cand_p)] if cand_p.exists() else []
-        write_csv(dec_p, DEC_COLS, rows)
-        print(f"Đã tạo file mẫu {rel(dec_p)} ({len(rows)} dòng, mỗi ca bất thường một dòng).\n"
-              "Hãy điền cột quyet_dinh, quy_tac_ghi_vao_guideline, phien_ban_guideline, nguoi_chot "
-              "(có thể gộp nhiều ca cùng quy tắc, thêm/xoá dòng tuỳ ý nhưng mỗi ảnh bị cờ cần >= 1 dòng đã điền), "
-              "rồi chạy lại script này.")
-        sys.exit(1)
+    images, annotations, rows = [], [], []
+    for image_id, image in enumerate(sorted(batch), 1):
+        source = corrected if image in scope else consensus
+        width, height = source.images[image]
+        images.append({"id": image_id, "file_name": image, "width": width, "height": height})
+        for obj in source.objects[image]:
+            if obj.cls not in tax.classes:
+                die(f"{image} #{obj.id}: lớp cũ '{obj.cls}' chưa được xử lý.")
+            annotations.append(make_ann(tax, len(annotations) + 1, image_id, obj.cls, obj.box, obj.attrs))
+            if obj.cls != tax.ignore:
+                x, y, w, h = xyxy_to_xywh(obj.box)
+                rows.append({"image": image, "class": obj.cls, "x": x, "y": y, "w": w, "h": h,
+                             **{name: obj.attrs[name] for name in tax.attrs if name != "can_review"},
+                             "nguon": "calibration" if image in scope else "consensus"})
 
-    decs = [r for r in (read_csv(dec_p) if dec_p.exists() else []) if (r.get("quyet_dinh") or "").strip()]
-    done_imgs = {r["image"].strip() for r in decs if (r.get("image") or "").strip()}
-    errs = [f"Ảnh bị cờ {i} chưa có dòng quyết định nào (điền quyet_dinh trong calibration_decisions.csv)."
-            for i in flagged if i not in done_imgs]
-    warns = [f"Dòng {r.get('case_id') or r.get('image')}: thiếu quy_tac_ghi_vao_guideline / phien_ban_guideline."
-             for r in decs if not (r.get("quy_tac_ghi_vao_guideline") or "").strip()
-             or not (r.get("phien_ban_guideline") or "").strip()]
+    attribution = ROOT / "data" / "ATTRIBUTION.csv"
+    records = read_csv(attribution)
+    sources = {row["file"]: row for row in records if row["file"] in batch}
+    if len(sources) != len(batch) or any(
+        not source.get(key) for source in sources.values() for key in ("author", "license", "source_url")
+    ):
+        die("ATTRIBUTION.csv thiếu thông tin nguồn cho ảnh trong lô.")
+    source_hashes = {image: digest(IMAGES_DIR / image) for image in batch}
+    label_path = QC_DIR / "labels_calibrated.json"
+    data = build_coco(tax, images, annotations, {"description": "Nhãn lô thực hành Day 07", "taxonomy": tax.version})
+    label_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf8")
+    write_csv(QC_DIR / "labels_calibrated.csv",
+              ["image", "class", "x", "y", "w", "h", *[key for key in tax.attrs if key != "can_review"], "nguon"],
+              rows)
 
-    cal_p = Path(args.calibrated)
-    cal = None
-    if flagged:
-        if not cal_p.exists():
-            errs.append(f"Chưa có {rel(cal_p)}: export COCO 1.0 từ CVAT sau khi sửa các ảnh bị cờ rồi lưu đúng tên này.")
-        else:
-            cal = load_coco(cal_p, tax)
-            errs += [f"Ảnh bị cờ {i} không có trong file calibrated." for i in flagged if i not in cal.images]
-            for p in cal.problems:
-                warns.append(p)
-            for o in (o for objs in cal.objects.values() for o in objs):
-                if o.cls not in tax.classes:
-                    errs.append(f"Lớp '{o.cls}' trong file calibrated không thuộc taxonomy.")
-                    break
-    for w in warns:
-        print("[WARN]", w)
-    if errs:
-        for e in errs:
-            print("[ERROR]", e)
-        sys.exit(1)
-
-    cons = load_coco(cons_p, tax)
-    images, anns, csv_rows, aid = [], [], [], 1
-    flagged_set = set(flagged)
-    for img in sorted(cons.images):
-        if img in flagged_set:
-            src, objs, w, h = "calibration", cal.objects[img], *cal.images[img]
-        else:
-            src, objs, (w, h) = "consensus", cons.objects[img], cons.images[img]
-        iid = len(images) + 1
-        images.append({"id": iid, "file_name": img, "width": w, "height": h})
-        for o in objs:
-            if o.cls not in tax.classes:
-                continue
-            anns.append(make_ann(tax, aid, iid, o.cls, o.box, o.attrs))
-            if o.cls != tax.ignore:
-                bx = xyxy_to_xywh(o.box)
-                csv_rows.append({"image": img, "class": o.cls, "x": bx[0], "y": bx[1], "w": bx[2], "h": bx[3],
-                                 **{n: o.attrs[n] for n in tax.attrs if n != "can_review"}, "nguon": src})
-            aid += 1
-    (QC_DIR / "labels_calibrated.json").write_text(json.dumps(
-        build_coco(tax, images, anns, {"description": "Nhãn cuối sau calibration", "taxonomy": tax.version}),
-        ensure_ascii=False, indent=1), encoding="utf8")
-    cols = ["image", "class", "x", "y", "w", "h"] + [n for n in tax.attrs if n != "can_review"] + ["nguon"]
-    write_csv(QC_DIR / "labels_calibrated.csv", cols, csv_rows)
-    n_cal = sum(1 for r in csv_rows if r["nguon"] == "calibration")
-    print(f"Đã gộp {len(images)} ảnh, {len(anns)} annotation ({len(csv_rows)} vật + vùng ignore tách riêng): "
-          f"{n_cal} vật từ calibration, {len(csv_rows) - n_cal} từ đồng thuận.")
-    print(f"Ghi: {rel(QC_DIR / 'labels_calibrated.json')}, {rel(QC_DIR / 'labels_calibrated.csv')}")
-    print("Bước tiếp: python scripts/qc_sample.py")
+    inputs = [
+        QC_DIR / "assignment.csv", QC_DIR / "iaa_summary.json", QC_DIR / "calibration_decisions.csv", CALIBRATION_CONTEXT_PATH,
+        FINAL_GUIDELINE_PATH, GUIDELINE_CHANGE_PATH, final_taxonomy_path(), attribution,
+    ]
+    if corrected:
+        inputs.append(corrected_path)
+    manifest = {
+        "intended_use": "Thực hành đặc tả và QC nhãn 2D trong Day 07.",
+        "limitations": "Tập ảnh tuyển chọn để luyện ca biên; độ đại diện cho dữ liệu vận hành chưa được đánh giá.",
+        "format": "COCO 1.0 bbox góc trên trái [x, y, w, h] theo pixel",
+        "taxonomy_version": tax.version,
+        "taxonomy": rel(final_taxonomy_path()),
+        "guideline": rel(FINAL_GUIDELINE_PATH),
+        "labels": {"path": rel(label_path), "sha256": digest(label_path)},
+        "inputs_sha256": {rel(path.resolve()): digest(path) for path in inputs},
+        "csv_sha256": digest(QC_DIR / "labels_calibrated.csv"),
+        "images": [{"file": image, "sha256": source_hashes[image], "source": sources[image]}
+                   for image in sorted(batch)],
+    }
+    manifest_path = QC_DIR / "batch_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf8")
+    print(f"Đã gộp {len(images)} ảnh, {len(annotations)} annotation. Bước tiếp: python scripts/qc_sample.py.")
 
 
 if __name__ == "__main__":

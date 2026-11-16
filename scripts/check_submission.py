@@ -1,147 +1,99 @@
-#!/usr/bin/env python3
-"""Tự kiểm bài nộp trước khi push lần cuối (giảng viên cũng dùng để chấm sơ bộ).
-
-    python scripts/check_submission.py
-
-Kiểm: tiêu đề README có đủ MSHV - Họ tên, guideline cá nhân của mọi thành viên,
-guideline thống nhất, nhãn từng người, các file CSV/JSON của calibration, báo cáo QC,
-và (nếu có git) mọi thành viên đều có commit.
-Chỉ kiểm CÓ/ĐỦ, không chấm chất lượng nội dung.
-"""
+"""Kiểm bài nộp và đối chiếu quyết định với vòng QC của bản nhãn hiện tại."""
 from __future__ import annotations
 
-import csv
-import hashlib
+import argparse
+from collections import defaultdict
+import json
 import re
-import subprocess
-import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from common import QC_DIR, ROOT, digest, load_all_labels, load_taxonomy, require_assignment
+from qc_report import make_report
+from review_evidence import LABELS_PATH, round_dir
+
 SUB = ROOT / "submission"
-errs, warns = [], []
-DEFAULT_RULES = {"min_box_height_px": 20, "iou_thr_large": 0.85, "iou_thr_small": 0.7, "large_px": 50,
-                 "iaa_iou": 0.85, "iaa_class": 0.95, "error_rate_img_max": 0.02, "match_iou": 0.5}
+
+REQUIRED_REPORT_FIELDS = (
+    "Mục đích và giới hạn sử dụng",
+    "Manifest và checksum nhãn cuối",
+    "Guideline và taxonomy khi gán / khi bàn giao",
+    "Lượt hoàn thành / được giao",
+    "Vòng QC",
+    "Người review và ngày",
+    "Đã duyệt / cả lô",
+    "Quyết định",
+    "Lý do, người nhận và phạm vi sử dụng",
+    "Kiểm ngược từ báo cáo tới ảnh, rule và nhãn",
+)
 
 
-def err(m): errs.append(m)
-def warn(m): warns.append(m)
-
-
-def members() -> list:
-    p = SUB / "qc" / "assignment.csv"
-    if not p.exists():
-        err("Thiếu submission/qc/assignment.csv (chạy scripts/split_assign.py).")
-        return []
-    ids = set()
-    with p.open(encoding="utf8") as f:
-        for r in csv.DictReader(f):
-            ids.update(x for x in r["annotators"].split("|") if x)
-    return sorted(ids)
+def report_fields(text: str) -> dict:
+    fields = defaultdict(list)
+    for name, value in re.findall(r"^-[ \t]+([^:\n]+):[ \t]*(.*)$", text, re.M):
+        fields[name.strip()].append(value.strip())
+    invalid = [name for name in REQUIRED_REPORT_FIELDS if len(fields[name]) != 1 or not fields[name][0]]
+    if invalid:
+        raise ValueError("QC_REPORT.md có mục thiếu, trống hoặc trùng: " + ", ".join(invalid))
+    return {name: fields[name][0] for name in REQUIRED_REPORT_FIELDS}
 
 
 def main() -> int:
-    team = members()
-    print(f"Thành viên (theo assignment.csv): {', '.join(team) or '(chưa có)'}")
-
-    # README
-    rd = ROOT / "README.md"
-    title = ""
-    if rd.exists():
-        for line in rd.read_text(encoding="utf8").splitlines():
-            if line.startswith("# "):
-                title = line
-                break
-    if not title:
-        err("README.md không có dòng tiêu đề `# ...`.")
-    else:
-        if "<" in title and ">" in title:
-            err("Tiêu đề README còn placeholder `<...>`: hãy điền tên nhóm và danh sách MSHV - Họ tên.")
-        for m in team:
-            if not re.search(rf"\b{re.escape(m)}\s*-\s*\S", title):
-                err(f"Tiêu đề README thiếu `{m} - Họ và tên`.")
-
-    # guideline cá nhân
-    ind = SUB / "guidelines" / "individual"
-    v0 = hashlib.md5((ROOT / "guideline" / "guideline_v0_starter.md").read_bytes()).hexdigest()
-    for m in team:
-        fs = list(ind.glob(f"guideline_{m}_*.md"))
-        if not fs:
-            err(f"Thiếu guideline cá nhân của {m}: submission/guidelines/individual/guideline_{m}_<HoTen>.md")
-        elif hashlib.md5(fs[0].read_bytes()).hexdigest() == v0:
-            err(f"Guideline của {m} giống hệt bản v0 (chưa sửa gì).")
-    agreed = SUB / "guidelines" / "guideline_v1.0_agreed.md"
-    if not agreed.exists():
-        err("Thiếu submission/guidelines/guideline_v1.0_agreed.md")
-    elif hashlib.md5(agreed.read_bytes()).hexdigest() == v0:
-        err("guideline_v1.0_agreed.md giống hệt v0.")
-    if not (SUB / "guidelines" / "guideline_v1.1_calibrated.md").exists():
-        warn("Chưa có guideline_v1.1_calibrated.md. Nếu calibration không đổi quy tắc nào, hãy nói rõ trong QC_REPORT.md.")
-
-    # ghi chú cá nhân
-    for m in team:
-        if not list((SUB / "individual_notes").glob(f"{m}_*.md")):
-            err(f"Thiếu ghi chú cá nhân của {m}: submission/individual_notes/{m}_<HoTen>.md")
-
-    # TEAM.md
-    tm = ROOT / "TEAM.md"
-    if not tm.exists() or "| 1 | | |" in tm.read_text(encoding="utf8"):
-        err("TEAM.md chưa điền (bảng thành viên còn trống).")
-
-    # ngưỡng không được đổi
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--round", type=int, default=1, help="Vòng được dùng để ra quyết định cuối.")
+    args = parser.parse_args()
+    if args.round < 1:
+        parser.error("--round phải là số nguyên dương.")
+    assignment = require_assignment()
+    members = {member for codes in assignment.values() for member in codes}
+    errors = []
+    for member in sorted(members):
+        for path in (
+            SUB / "guidelines" / "individual" / f"guideline_{member}.md",
+            SUB / "labels" / f"{member}.json",
+            SUB / "individual_notes" / f"{member}.md",
+        ):
+            if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+                errors.append(f"Thiếu hoặc trống: {path.relative_to(ROOT)}.")
+    labels = load_all_labels(load_taxonomy())
+    if set(labels) != members:
+        errors.append("Danh sách file nhãn phải khớp mã thành viên trong assignment.csv.")
+    starter = ROOT / "guideline" / "guideline_v0_starter.md"
+    for member in sorted(members):
+        draft = SUB / "guidelines" / "individual" / f"guideline_{member}.md"
+        if draft.is_file() and digest(draft) == digest(starter):
+            errors.append(f"Guideline {member} giống nguyên bản v0.")
+    report = QC_DIR / "QC_REPORT.md"
     try:
-        import json
-        rules = json.loads((SUB / "taxonomy.json").read_text(encoding="utf8")).get("rules", {})
-        for k, v in DEFAULT_RULES.items():
-            if rules.get(k) != v:
-                err(f"taxonomy.json: rules.{k} = {rules.get(k)} (mặc định {v}). Không đổi các ngưỡng QC.")
-    except Exception as e:
-        err(f"Không đọc được submission/taxonomy.json: {e}")
-
-    # nhãn
-    for m in team:
-        if not list((SUB / "labels").glob(f"{m}_*.json")):
-            err(f"Thiếu nhãn của {m}: submission/labels/{m}_<HoTen>.json")
-
-    # calibration + QC
-    for f in ["assignment.csv", "calibration_candidates.csv", "calibration_decisions.csv",
-              "labels_calibrated.json", "labels_calibrated.csv", "iaa_summary.md",
-              "qc_sample.csv", "qc_review.csv", "qc_report_auto.md", "QC_REPORT.md"]:
-        if not (SUB / "qc" / f).exists():
-            err(f"Thiếu submission/qc/{f}")
-    rep = SUB / "qc" / "QC_REPORT.md"
-    if rep.exists():
-        t = rep.read_text(encoding="utf8")
-        if "<<" in t or "TODO" in t:
-            err("QC_REPORT.md còn chỗ `<<...>>` / TODO chưa điền.")
-        if not re.search(r"\b(Release|Hold|Rework)\b", t):
-            err("QC_REPORT.md chưa có quyết định Release / Hold / Rework.")
-    dec = SUB / "qc" / "calibration_decisions.csv"
-    if dec.exists():
-        with dec.open(encoding="utf8") as f:
-            rows = list(csv.DictReader(f))
-        if not any((r.get("quyet_dinh") or "").strip() for r in rows):
-            err("calibration_decisions.csv chưa có quyết định nào.")
-
-    # git
-    try:
-        out = subprocess.run(["git", "-C", str(ROOT), "log", "--format=%an <%ae>"],
-                             capture_output=True, text=True, check=True).stdout.splitlines()
-        authors = sorted(set(out))
-        print(f"Số tác giả commit khác nhau: {len(authors)}")
-        if team and len(authors) < len(team):
-            warn(f"Chỉ có {len(authors)} tác giả commit nhưng nhóm có {len(team)} người: mỗi thành viên phải có commit của mình.")
-    except Exception:
-        warn("Không đọc được git log (chưa `git init` / chưa commit?).")
-
-    for w in warns:
-        print("CẢNH BÁO:", w)
-    for e in errs:
-        print("LỖI:", e)
-    print(f"\nTổng kết: {len(errs)} lỗi, {len(warns)} cảnh báo.")
-    print("Script này chỉ kiểm có/đủ. Nội dung (guideline rõ không, QC đúng không) vẫn do người đọc đánh giá.")
-    return 1 if errs else 0
+        text = report.read_text(encoding="utf-8")
+        if "<<" in text or "TODO" in text:
+            errors.append("QC_REPORT.md còn nội dung mẫu.")
+        fields = report_fields(text)
+        decision = fields["Quyết định"]
+        round_value = fields["Vòng QC"]
+        if not re.fullmatch(r"[0-9]+", round_value) or int(round_value) != args.round:
+            errors.append("QC_REPORT.md cần ghi số vòng QC đang nộp.")
+        directory = round_dir(args.round)
+        result = json.loads((directory / "qc_result.json").read_text(encoding="utf-8"))
+        if (
+            result["round"] != args.round or result["labels_sha256"] != digest(LABELS_PATH)
+            or result["review_sha256"] != digest(directory / "qc_review.csv")
+        ):
+            errors.append("qc_result.json lệch phiếu hoặc bản nhãn. Chạy qc_report.py với đúng vòng.")
+        review_args = argparse.Namespace(round=args.round, **result["reviewer_inputs"])
+        computed, _ = make_report(directory, review_args)
+        if (
+            computed != result["decision"] or decision not in {"Release", "Hold", "Rework"}
+            or computed != decision.upper()
+        ):
+            errors.append(f"Quyết định trong bài nộp cần khớp vòng QC hiện tại ({computed}).")
+    except (OSError, ValueError, KeyError, TypeError, SystemExit) as exc:
+        errors.append(f"Chưa đủ bằng chứng bàn giao: {exc}.")
+    if not (ROOT / "TEAM.md").is_file():
+        errors.append("Thiếu TEAM.md.")
+    for error in errors:
+        print(f"LỖI: {error}")
+    print(f"Tổng kết: {len(errors)} lỗi. Reviewer vẫn cần kiểm nội dung và mở thử gói bàn giao.")
+    return int(bool(errors))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

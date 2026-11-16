@@ -1,4 +1,4 @@
-# Guideline gán nhãn — <phiên bản> — <MSHV - Họ tên | Nhóm>
+# Guideline gán nhãn — <phiên bản> — <mã hoặc nhóm>
 
 > Copy file này (hoặc `guideline_v0_starter.md`) rồi viết. Một guideline đủ gồm **5 phần**. Câu nào của v0
 > làm hai người đọc ra hai cách khác nhau thì phải viết lại cho một cách hiểu duy nhất.
@@ -25,11 +25,11 @@ Mỗi thuộc tính: tên, **các mức cố định**, nghĩa từng mức, **n
 Box ôm sát phần nhìn thấy; vật bị che; vật bị cắt mép ảnh; phản chiếu / hình in / tượng / đồ chơi; xe chủ (ego); vật quá nhỏ; đám đông; một vật có nhiều phần (người và xe)…
 
 ## 4. Ca khó
-| Ảnh | Tình huống | Quyết định | Lý do |
-|---|---|---|---|
-| img_0xx | | | |
+| Ảnh | Tình huống | Rule ID | Quyết định | Lý do |
+|---|---|---|---|---|
+| img_0xx | | | | |
 
-Câu hỏi nào chưa chốt: gắn `can_review` và ghi lên trưởng nhóm. Không tự đoán.
+Nếu chưa chốt, đánh dấu `can_review` trên box hoặc ghi vấn đề cấp ảnh. Dùng mã quy tắc trong nhật ký QC.
 
 ## 5. QC và phiên bản
 Ngưỡng QC áp dụng, ai quyết ca mơ hồ, lịch sử thay đổi:

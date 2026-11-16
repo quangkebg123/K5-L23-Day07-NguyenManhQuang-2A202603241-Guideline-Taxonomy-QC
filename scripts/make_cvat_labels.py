@@ -10,15 +10,17 @@ from __future__ import annotations
 import argparse
 import json
 
-from common import ROOT, load_taxonomy, rel
+from common import ROOT, final_taxonomy_path, load_taxonomy, rel
 
 COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#46c8c8", "#f032e6", "#9a6324",
           "#808000", "#008080", "#800000", "#000075"]
 
 
 def main() -> None:
-    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
-    tax = load_taxonomy()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--final", action="store_true", help="Sinh cấu hình cho taxonomy sau calibration.")
+    args = parser.parse_args()
+    tax = load_taxonomy(final_taxonomy_path()) if args.final else load_taxonomy()
     labels = []
     for i, name in enumerate(tax.classes):
         attrs = []
@@ -34,7 +36,7 @@ def main() -> None:
         labels.append({"name": name, "color": "#808080" if name == tax.ignore else COLORS[i % len(COLORS)],
                        "attributes": attrs})
     text = json.dumps(labels, ensure_ascii=False, indent=2)
-    out = ROOT / "cvat" / "labels_generated.json"
+    out = ROOT / "cvat" / ("labels_final.json" if args.final else "labels_generated.json")
     out.parent.mkdir(exist_ok=True)
     out.write_text(text + "\n", encoding="utf8")
     print(text)

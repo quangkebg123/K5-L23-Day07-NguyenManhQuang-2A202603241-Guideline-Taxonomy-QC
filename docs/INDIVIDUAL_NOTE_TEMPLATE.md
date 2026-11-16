@@ -1,6 +1,6 @@
-# Ghi chú cá nhân — <MSHV> - <Họ và tên>
+# Ghi chú cá nhân — <mã>
 
-> Copy file này thành `submission/individual_notes/<MSHV>_<HoTen>.md`. Mỗi thành viên một file, ngắn gọn (khoảng một trang), tự viết.
+> Copy file này thành `submission/individual_notes/<mã>.md`. Mỗi thành viên một file, ngắn gọn (khoảng một trang), tự viết.
 
 ## 1. Pha 1: ba ca khó tôi tìm ra trong 40 ảnh
 | Ảnh | v0 không trả lời được gì | Quyết định ban đầu của tôi |

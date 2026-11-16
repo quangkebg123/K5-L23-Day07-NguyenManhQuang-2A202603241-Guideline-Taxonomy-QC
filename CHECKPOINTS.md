@@ -1,36 +1,25 @@
 # Checkpoints — Day 07
 
-Bài **nhóm 2–5 người**, dự kiến **240 phút**. Các mốc tính từ lúc bắt đầu, là điểm tự kiểm tra tại lớp, **không phải hạn nộp**. Deadline do giảng viên/coach thông báo.
+Bài **nhóm 2–5 người**, 240 phút. Mốc tính từ lúc bắt đầu, là điểm tự kiểm tra tại lớp, **không phải hạn nộp**.
 
 | Mốc | Mục tiêu | Tự kiểm tra |
 |---|---|---|
-| 0:15 | **CP0** Chuẩn bị | Repo public đã fork và clone; `TEAM.md` đã điền; cài được thư viện. |
-| 0:50 | **CP1** Guideline cá nhân | Mỗi người đã push file của mình, có ca khó theo ảnh và ngưỡng đo được. |
-| 1:20 | **CP2** Guideline thống nhất | `guideline_v1.0_agreed.md` đủ 5 phần; `taxonomy.json` khớp; sinh được nhãn CVAT. |
+| 0:15 | **CP0** Chuẩn bị | Mở được ảnh, đăng nhập CVAT, mỗi người có mã và biết kênh nộp riêng. |
+| 0:50 | **CP1** Guideline cá nhân | Mỗi người có guideline riêng và giải thích được một ảnh ca khó. |
+| 1:20 | **CP2** Guideline thống nhất | v1.0 và `taxonomy.json` đã khóa; `make_cvat_labels.py` chạy được. |
 | 1:30 | Nghỉ | |
-| 2:30 | **CP3** Gán nhãn | `assignment.csv` đúng K; mỗi người đã export nhãn; `validate_labels.py --all` sạch. |
-| 2:50 | **CP4** IAA | Chạy `qc_compare.py`, đọc `iaa_summary.md`, xem ảnh `work/viz/`. |
-| 3:30 | **CP5** Calibration | Mỗi quyết định một dòng; có v1.1; `build_final.py` ra `labels_calibrated.json`. |
-| 4:00 | **CP6** QC và nộp | `QC_REPORT.md` có quyết định; ghi chú cá nhân; `check_submission.py` sạch; đã nộp link. |
+| 2:30 | **CP3** Gán độc lập | Mỗi người đã export COCO và `validate_labels.py` sạch; đã nộp riêng trước khi tập hợp. |
+| 2:50 | **CP4** IAA | Đủ lượt gán; đọc được mẫu số IAA; đã xem một ca tham chiếu. |
+| 3:30 | **CP5** Calibration | Có quyết định mỗi ca, guideline v1.1, nhãn cuối và `batch_manifest.json`. |
+| 4:00 | **CP6** QC và nộp | Đã ghi số ảnh duyệt, quyết định, lý do; người khác mở được gói đúng vòng QC. |
 
-## Chi tiết từng checkpoint
+## Cần hiểu ở mỗi mốc
 
-### CP1 · Cần hiểu
-Chỗ nào v0 làm hai người hiểu khác nhau? Mức thuộc tính của bạn có **ngưỡng đo được** (ví dụ phần trăm che) chưa?
+- **CP1:** chỗ nào v0 làm hai người hiểu khác nhau? Mức thuộc tính của bạn có ngưỡng đo được chưa?
+- **CP2:** phép thử lớp / thuộc tính: *"mô hình có phải đoán ra điều này không?"* Ca ngoài taxonomy xử lý thế nào, và cả nhóm có **cùng một** cách không?
+- **CP3:** vì sao phải gán độc lập? Script kiểm được gì và **không** kiểm được gì (box có ôm sát vật không)?
+- **CP4:** IAA thấp thì sửa guideline hay sửa người gán? Dấu hiệu nào phân biệt?
+- **CP5:** quyết định nào là quy tắc mới phải vào guideline? Thiếu dòng ghi quyết định thì sau này nhóm tranh luận lại đúng ca đó.
+- **CP6:** tỉ lệ lỗi **theo ảnh** khác **theo đối tượng** thế nào, vì sao luôn ghi mẫu số? Cây quyết định đi theo thứ tự Hold → Rework → Release.
 
-### CP2 · Cần hiểu
-Phép thử lớp/thuộc tính: *"mô hình có phải đoán ra điều này không?"* Vật không thuộc lớp nào xử lý thế nào, và cả nhóm có **cùng một** cách không?
-
-### CP3 · Cần hiểu
-Vì sao phải gán độc lập? Script `validate_labels.py` kiểm được gì và **không** kiểm được gì (box có ôm sát vật không)?
-
-### CP4 · Cần hiểu
-IAA thấp: sửa guideline hay sửa người gán? Dựa vào dấu hiệu nào để phân biệt?
-
-### CP5 · Cần hiểu
-Quyết định nào là quy tắc mới phải vào guideline? Nếu thiếu dòng ghi quyết định, nhóm sẽ tranh luận lại đúng ca đó vào lần sau.
-
-### CP6 · Cần hiểu
-Tỉ lệ lỗi **theo đối tượng** khác **theo ảnh** thế nào, vì sao luôn ghi mẫu số? Cây quyết định đi theo thứ tự Hold → Rework → Release.
-
-Chi tiết lệnh xem [GUIDE.md](GUIDE.md). Nếu CVAT chậm, mỗi người có thể cài CVAT local hoặc dùng tài khoản cvat.ai riêng từ trước buổi học.
+Nếu CVAT chậm hoặc thiếu quyền Review, báo coach. Dùng ảnh chồng box và phiếu CSV để tiếp tục xem ca. Chi tiết lệnh: [GUIDE.md](GUIDE.md).

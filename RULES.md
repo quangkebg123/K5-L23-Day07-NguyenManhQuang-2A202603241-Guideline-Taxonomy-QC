@@ -2,35 +2,28 @@
 
 ## Hình thức
 
-**Bài nhóm 2–5 người**, nhưng **mỗi thành viên có sản phẩm riêng** (guideline cá nhân, nhãn cá nhân, ghi chú cá nhân, commit của mình).
-Nhóm tự sắp xếp. Mỗi nhóm một repo public; cách đặt tên repo xem [SUBMISSION.md](SUBMISSION.md).
+- **Nhóm 2–5 người**, mỗi thành viên có guideline, nhãn và ghi chú riêng. Mọi người làm cùng phạm vi (40 ảnh) và cùng tiêu chí QC.
+- Dùng **mã thành viên** ba chữ số (ví dụ `101`) trong tên file, Task và nhật ký.
 
-## Độc lập và hợp tác
+## Độc lập
 
-- **Pha 1 và Pha 3 làm độc lập.** Không xem guideline hay nhãn của nhau, không hỏi nhau "ảnh này bạn gán gì". Độ đồng thuận (IAA) chỉ có nghĩa khi hai người gán **không** nhìn nhau.
-- Pha 2 và Pha 5 là họp nhóm: cùng thảo luận và chốt quyết định.
-- Sau khi chốt `guideline_v1.0_agreed.md`, **không đổi guideline** cho tới hết Pha 3. Ca nào mơ hồ thì tick `can_review` rồi đem ra calibration, đừng tự đoán.
-- Không sao chép bài của nhóm khác (guideline, nhãn, báo cáo).
+- Viết guideline cá nhân và gán nhãn **độc lập**. Gửi riêng từng bản cho tới khi cả nhóm xong chặng đó.
+- Lúc gán dùng đúng v1.0 đã khóa. Chưa chắc thì tick `can_review` hoặc ghi vấn đề cấp ảnh; không xem nhãn của bạn để hỏi.
+- Họp nhóm ở Pha 2 và Pha 5.
 
-## Sử dụng AI
+## AI
 
-- Được sử dụng dùng AI
+- Được dùng AI để giải thích khái niệm (IoU, IAA…), gợi ý viết script, sửa chính tả. Ghi công cụ và cách bạn kiểm tra trong ghi chú cá nhân.
+- **Không dùng AI hay mô hình để gán box thay bạn** (pre-label sẽ học ở Day 08) và không dùng AI để "nhìn ảnh rồi cho biết nên gán gì". Nhãn của bạn là phán đoán của bạn.
+- Guideline cá nhân phải phản ánh các ca khó **bạn tự tìm ra** trong 40 ảnh. Bạn phải giải thích được từng quyết định trong file mình nộp.
 
-## Tính trung thực của số liệu
+## Số liệu trung thực
 
-- Không tự tạo nhãn, số đo, dòng QC hay quyết định chưa thực sự làm. Điểm IAA thấp hay kết quả **Rework** vẫn được điểm nếu phân tích trung thực. Báo Release khi số liệu không đạt thì bị trừ điểm.
-- Không sửa tay `iaa_summary.*`, `calibration_candidates.csv`, `consensus_draft.json`, `qc_report_auto.md`: đó là đầu ra của script.
-- Không đổi mục `rules` (các ngưỡng) trong `submission/taxonomy.json` để "đạt" số đo. Chỉ đổi `version`, `classes`, `attributes`.
-- Được sửa lỗi của script nếu tìm thấy bug; ghi rõ sửa gì và vì sao trong báo cáo QC.
-- Không sửa hay thêm/bớt ảnh trong `data/images/`.
+- Giữ nguyên artifact do script sinh. Phát hiện bug thì ghi thay đổi và bằng chứng chạy lại.
+- Giữ nguyên mục `rules` (ngưỡng) trong `taxonomy.json`.
+- Không tạo nhãn, số đo, dòng QC hay quyết định chưa thực sự làm. Hold hoặc Rework có căn cứ là kết quả hợp lệ.
 
-## Dữ liệu và giấy phép
+## Dữ liệu và nộp bài
 
-- 40 ảnh lấy từ Wikimedia Commons theo giấy phép mở; giữ nguyên `data/ATTRIBUTION.csv`. Không đưa ảnh/dữ liệu riêng tư vào repo.
-- Không commit thư mục `work/`, API key, token, hay file ngoài phạm vi bài (đã có `.gitignore`).
-
-## Git và nộp bài
-
-- Repo **public**. Mọi thành viên phải có **commit mang tên mình** chứa sản phẩm của mình.
-- Bài được chấm theo commit cuối cùng trước hạn; commit sau hạn tính là nộp muộn.
-- Thời hạn và kênh nộp do giảng viên/coach công bố; nộp muộn bị trừ điểm.
+- Giữ ghi công ảnh ([data/README.md](data/README.md)). Không đưa thêm thông tin cá nhân hay thông tin đăng nhập vào gói nộp.
+- Nộp **riêng tư** theo [SUBMISSION.md](SUBMISSION.md). Thời hạn và kênh do coach công bố; nộp muộn theo quy định của lớp.

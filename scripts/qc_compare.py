@@ -11,13 +11,13 @@ import argparse
 import json
 from collections import Counter, defaultdict
 from itertools import combinations
-from statistics import median
 
-from common import (QC_DIR, Taxonomy, annotators_of_image, build_coco, cluster_objects, covered_by, iou,
-                    iou_threshold, load_all_labels, load_assignment, load_taxonomy, make_ann, match_boxes,
-                    mean_box, rel, write_csv, xyxy_to_xywh)
+from common import (QC_DIR, Taxonomy, build_coco, cluster_objects, covered_by, digest, die, input_hashes, iou,
+                    iou_threshold, label_errors, load_all_labels, load_taxonomy, make_ann, match_boxes,
+                    mean_box, read_csv, rel, require_assignment, write_csv, xyxy_to_xywh)
 
-ISSUE_WEIGHT = {"bo_sot_thua": 2, "sai_lop": 2, "iou_thap": 1, "sai_thuoc_tinh": 1, "co_can_review": 1}
+ISSUE_WEIGHT = {"bo_sot_thua": 2, "sai_lop": 2, "iou_thap": 1, "sai_thuoc_tinh": 1, "co_can_review": 1,
+                "bat_dong_ignore": 1, "can_review_anh": 1}
 CAND_COLS = ["case_id", "image", "issue_type", "annotators", "class_a", "class_b", "box_a", "box_b", "iou",
              "ghi_chu_tu_dong"]
 
@@ -46,7 +46,7 @@ def finalize(st: dict, tax: Taxonomy) -> dict:
         "iou_pass": None if mi is None else mi >= r["iaa_iou"],
         "class_pass": None if ca is None else ca >= r["iaa_class"],
     }
-    out["pass"] = bool(out["iou_pass"] and out["class_pass"])
+    out["pass"] = None if not n else out["iou_pass"] and out["class_pass"]
     return out
 
 
@@ -59,24 +59,39 @@ def main() -> None:
     tax = load_taxonomy()
     r = tax.rules
     files = load_all_labels(tax)
-    assignment = load_assignment()
-    images = sorted({i for lf in files.values() for i in lf.objects})
+    assignment = require_assignment()
     check_attrs = [a for a in tax.attrs if a != "can_review"]
-
+    expected = {(image, member) for image, members in assignment.items() for member in members}
+    actual = {(image, member) for member, labels in files.items() for image in labels.images}
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    validation_errors = [f"{member}: {error}" for member, labels in files.items()
+                         for error in label_errors(labels, tax)]
+    if missing or extra or validation_errors:
+        die(f"Lượt gán thiếu: {missing}; lượt gán ngoài phân công: {extra}.\n"
+            + "\n".join(validation_errors))
+    images = sorted(assignment)
+    try:
+        hashes = input_hashes()
+    except ValueError as exc:
+        die(str(exc))
     issues, per_pair, total = [], defaultdict(pair_stats), pair_stats()
-    img_annotators, solo = {}, []
     for img in images:
-        anns = annotators_of_image(files, img, assignment)
-        if len(anns) < 2:
-            solo.append(img)
-            continue
-        img_annotators[img] = anns
+        anns = sorted(assignment[img])
         for a, b in combinations(anns, 2):
             key = f"{a}|{b}"
             oa = [o for o in files[a].objects[img] if o.cls != tax.ignore]
             ob = [o for o in files[b].objects[img] if o.cls != tax.ignore]
-            ia = [o.box for o in files[a].objects[img] if o.cls == tax.ignore]
-            ib = [o.box for o in files[b].objects[img] if o.cls == tax.ignore]
+            ignore_a = [o for o in files[a].objects[img] if o.cls == tax.ignore]
+            ignore_b = [o for o in files[b].objects[img] if o.cls == tax.ignore]
+            ia = [o.box for o in ignore_a]
+            ib = [o.box for o in ignore_b]
+            _, missing_a, missing_b = match_boxes(ignore_a, ignore_b, r["match_iou"])
+            for side, unmatched_regions in (("a", missing_a), ("b", missing_b)):
+                for region in unmatched_regions:
+                    issues.append({"image": img, "annotators": key, "issue_type": "bat_dong_ignore",
+                                   f"box_{side}": fmt_box(region.box),
+                                   "ghi_chu_tu_dong": "Vùng ignore không ghép được với vùng của người kia."})
             pairs, ua, ub = match_boxes(oa, ob, r["match_iou"])
             for st in (per_pair[key], total):
                 st["images"] += 1
@@ -106,17 +121,25 @@ def main() -> None:
                     issues.append({**base, "issue_type": "sai_thuoc_tinh", "ghi_chu_tu_dong": d})
             for side, un, mine_ign, other_ign, who, other in (("a", ua, ia, ib, a, b), ("b", ub, ib, ia, b, a)):
                 for o in un:
-                    if covered_by(o.box, other_ign) or covered_by(o.box, mine_ign):
+                    ignored_here = covered_by(o.box, mine_ign)
+                    ignored_there = covered_by(o.box, other_ign)
+                    if ignored_here and ignored_there:
                         for st in (per_pair[key], total):
                             st["skipped_ignore"] += 1
                         continue
                     for st in (per_pair[key], total):
                         st["unmatched_" + side] += 1
+                    asymmetric = ignored_here != ignored_there
+                    note = (
+                        f"Chỉ vùng ignore của {who if ignored_here else other} phủ box của {who}."
+                        if asymmetric else f"Chỉ {who} vẽ {o.cls} này. {other} bỏ sót hoặc {who} vẽ thừa."
+                    )
                     issues.append({
-                        "image": img, "annotators": key, "issue_type": "bo_sot_thua",
-                        "class_a": o.cls if side == "a" else "", "class_b": o.cls if side == "b" else "",
-                        "box_a": fmt_box(o.box) if side == "a" else "", "box_b": fmt_box(o.box) if side == "b" else "",
-                        "iou": "", "ghi_chu_tu_dong": f"chỉ {who} vẽ {o.cls} này; {other} bỏ sót (hoặc {who} vẽ thừa)"})
+                        "image": img, "annotators": key,
+                        "issue_type": "bat_dong_ignore" if asymmetric else "bo_sot_thua",
+                        f"class_{side}": o.cls, f"box_{side}": fmt_box(o.box),
+                        "ghi_chu_tu_dong": note,
+                    })
         # ca có cờ can_review (mỗi đối tượng 1 dòng/ảnh)
         for m in anns:
             for o in files[m].objects[img]:
@@ -125,6 +148,16 @@ def main() -> None:
                                    "class_b": "", "box_a": fmt_box(o.box), "box_b": "", "iou": "",
                                    "ghi_chu_tu_dong": f"{m} gắn cờ can_review (ca mơ hồ, cần chốt quy tắc)"})
 
+    issue_path = QC_DIR / "image_issues.csv"
+    if issue_path.exists():
+        for row in read_csv(issue_path):
+            img, member = row.get("image"), row.get("annotator")
+            region = (row.get("region") or "").strip()
+            note = (row.get("note") or "").strip()
+            if (img, member) not in expected or not region or not note:
+                die("image_issues.csv: mỗi dòng cần ảnh đã giao, mã người gán, vùng ảnh và lý do.")
+            issues.append({"image": img, "annotators": member, "issue_type": "can_review_anh",
+                           "ghi_chu_tu_dong": f"{region} — {note}"})
     order = {img: i for i, img in enumerate(images)}
     issues.sort(key=lambda x: (order[x["image"]], x["issue_type"], x["annotators"]))
     for i, x in enumerate(issues, 1):
@@ -136,10 +169,10 @@ def main() -> None:
     for x in issues:
         by_img[x["image"]].append(x)
     score_rows = []
-    for img in sorted(img_annotators, key=lambda i: order[i]):
+    for img in images:
         its = by_img.get(img, [])
         sc = sum(ISSUE_WEIGHT[x["issue_type"]] for x in its)
-        score_rows.append({"image": img, "n_annotators": len(img_annotators[img]), "n_issues": len(its),
+        score_rows.append({"image": img, "n_annotators": len(assignment[img]), "n_issues": len(its),
                            "score": sc, "needs_calibration": "yes" if its else "no"})
     score_rows.sort(key=lambda x: (-x["score"], x["image"]))
     write_csv(QC_DIR / "image_scores.csv", ["image", "n_annotators", "n_issues", "score", "needs_calibration"], score_rows)
@@ -148,20 +181,19 @@ def main() -> None:
 
     # ----- consensus
     cimages, canns, aid = [], [], 1
-    for img in sorted(img_annotators, key=lambda i: order[i]):
-        anns = img_annotators[img]
+    for img in images:
+        anns = sorted(assignment[img])
         w, h = next(files[m].images[img] for m in anns)
         iid = len(cimages) + 1
         cimages.append({"id": iid, "file_name": img, "width": w, "height": h})
         n, maj = len(anns), len(anns) // 2 + 1
         ign = {m: [o.box for o in files[m].objects[img] if o.cls == tax.ignore] for m in anns}
-        all_ign = [b for m in anns for b in ign[m]]
         objs = {m: [o for o in files[m].objects[img] if o.cls != tax.ignore] for m in anns}
         for cl in cluster_objects(objs, r["match_iou"]):
             box = mean_box([o.box for o in cl.values()])
             missing = [m for m in anns if m not in cl]
-            if len(cl) < maj and covered_by(box, all_ign):
-                continue  # vật nhỏ trong vùng ignore, không phải lỗi
+            if len(cl) < maj and all(covered_by(box, ign[member]) for member in anns):
+                continue
             cls_c = Counter(o.cls for o in cl.values())
             cls = sorted(cls_c.items(), key=lambda t: (-t[1], t[0]))[0][0]
             attrs, need = {}, False
@@ -197,8 +229,12 @@ def main() -> None:
 
     # ----- tổng kết
     summary = {"taxonomy_version": tax.version, "thresholds": {k: r[k] for k in ("iaa_iou", "iaa_class", "match_iou")},
-               "n_annotators": len(files), "n_images_compared": len(img_annotators),
-               "images_with_lt2_annotators": solo,
+               "n_annotators": len(files), "n_images_compared": len(images),
+               "coverage": {"completed": len(actual), "assigned": len(expected)},
+               "inputs": hashes,
+               "artifacts": {name: digest(QC_DIR / name) for name in (
+                   "consensus_draft.json", "flagged_images.txt", "calibration_candidates.csv"
+               )},
                "overall": finalize(total, tax), "per_pair": {k: finalize(v, tax) for k, v in sorted(per_pair.items())},
                "n_issues": len(issues), "issues_by_type": dict(Counter(x["issue_type"] for x in issues)),
                "n_flagged_images": len(flagged)}
@@ -206,7 +242,8 @@ def main() -> None:
 
     ov = summary["overall"]
     md = [f"# Tóm tắt IAA (taxonomy {tax.version})", "",
-          f"- Ảnh được so sánh (có >=2 người gán): **{len(img_annotators)}**; số người gán: {len(files)}",
+          f"- Ảnh được so sánh (có >=2 người gán): **{len(images)}**; số người gán: {len(files)}",
+          f"- Lượt gán đủ **{len(actual)}/{len(expected)}**.",
           f"- IoU trung bình và % cùng lớp **chỉ tính trên các cặp box đã ghép** (IoU >= {r['match_iou']}, ghép 1-1 không phân biệt lớp). "
           f"Box chưa ghép được thống kê riêng ở cột bỏ sót/thừa.",
           f"- Mẫu số: {ov['n_matched_pairs']} cặp box ghép (tổng mọi cặp người gán, ảnh chung).", "",
@@ -219,58 +256,18 @@ def main() -> None:
                   f"{mi_s} | {pct(v['class_agreement'])} | " +
                   " | ".join(pct(v['attr_agreement'][a]) for a in check_attrs) +
                   f" | {v['n_unmatched_a']}/{v['n_unmatched_b']} | {v['n_skipped_in_ignore']} | "
-                  f"{'ĐẠT' if v['pass'] else 'CHƯA ĐẠT'} |")
+                  f"{'N/A' if v['pass'] is None else ('ĐẠT' if v['pass'] else 'CHƯA ĐẠT')} |")
     md += ["", f"Ngưỡng IAA: IoU TB >= {r['iaa_iou']}, đồng thuận lớp >= {r['iaa_class'] * 100:.0f}%.", "",
            f"Số ca bất thường: {len(issues)} ({summary['issues_by_type']}), trên {len(flagged)} ảnh cần calibration."]
     (QC_DIR / "iaa_summary.md").write_text("\n".join(md) + "\n", encoding="utf8")
 
     # ----- console
-    print(f"Đã so sánh {len(img_annotators)} ảnh, {len(files)} người gán, {ov['n_matched_pairs']} cặp box ghép.")
-    if solo:
-        print(f"CẢNH BÁO: {len(solo)} ảnh có < 2 người gán (bỏ qua): {', '.join(solo[:6])}{' ...' if len(solo) > 6 else ''}")
-    print(f"IoU trung bình: {ov['mean_iou'] if ov['mean_iou'] is None else round(ov['mean_iou'], 3)} "
-          f"(ngưỡng {r['iaa_iou']}) | cùng lớp: {pct(ov['class_agreement'])} (ngưỡng {r['iaa_class'] * 100:.0f}%) "
-          f"=> {'ĐẠT' if ov['pass'] else 'CHƯA ĐẠT'}")
-    print(f"Ca bất thường: {len(issues)} {dict(Counter(x['issue_type'] for x in issues))}; ảnh cần calibration: {len(flagged)}")
-    # gợi ý heuristic
-    people = defaultdict(lambda: [0, 0])  # số ca, mẫu số (số box so sánh)
-    for key, st in total_by_pair(per_pair).items():
-        for m in key.split("|"):
-            people[m][1] += st
-    for x in issues:
-        if x["issue_type"] != "co_can_review":
-            for m in x["annotators"].split("|"):
-                people[m][0] += 1
-    rates = {m: (c / d if d else 0.0) for m, (c, d) in people.items()}
-    print("\nGợi ý xử lý (heuristic, chỉ để định hướng cho buổi calibration):")
-    if rates:
-        print("  Tỉ lệ ca bất thường mỗi người (ca / box so sánh): " + ", ".join(f"{m}={v:.2f}" for m, v in sorted(rates.items())))
-    types = Counter(x["issue_type"] for x in issues if x["issue_type"] != "co_can_review")
-    tot = sum(types.values())
-    top = types.most_common(1)[0] if types else None
-    if not issues:
-        print("  Không có bất thường - vẫn nên đối chiếu thủ công vài ảnh để chắc chắn không cùng sai.")
-    else:
-        odd = None
-        if len(rates) >= 3:
-            med = median(rates.values())
-            mx = max(rates, key=rates.get)
-            if med > 0 and rates[mx] >= 1.5 * med:
-                odd = mx
-        if odd:
-            print(f"  - Chỉ một người lệch nhiều ({odd}) -> hướng dẫn lại người này, xem lại họ đã hiểu quy tắc nào sai.")
-        if top and tot and top[1] / tot >= 0.5:
-            print(f"  - Phần lớn bất thường cùng một loại ({top[0]}: {top[1]}/{tot}) -> quy tắc về loại này mơ hồ: sửa guideline.")
-        elif not odd:
-            print("  - Bất thường trải đều nhiều loại -> xem từng ca trong calibration_candidates.csv, nhóm theo chủ đề rồi chốt quy tắc.")
-        print("  - Lưu ý: nếu mọi người giống nhau nhưng cùng sai thì script KHÔNG phát hiện -> đối chiếu với guideline/gold set bằng mắt.")
+    print(f"Đã so sánh {len(images)} ảnh, {len(files)} người gán, {ov['n_matched_pairs']} cặp box ghép.")
+    print(f"Lượt gán: {len(actual)}/{len(expected)}. Ca cần xem: {len(issues)} trên {len(flagged)} ảnh.")
+    print("Đối chiếu guideline và ảnh tham chiếu để tìm lỗi chung của nhiều người.")
     print(f"\nĐã ghi vào {rel(QC_DIR)}/: iaa_summary.json|md, calibration_candidates.csv, image_scores.csv, "
           f"consensus_draft.json, flagged_images.txt")
     print("Bước tiếp: python scripts/viz_disagreement.py --images flagged")
-
-
-def total_by_pair(per_pair) -> dict:
-    return {k: v["objects_a"] + v["objects_b"] for k, v in per_pair.items()}
 
 
 if __name__ == "__main__":
