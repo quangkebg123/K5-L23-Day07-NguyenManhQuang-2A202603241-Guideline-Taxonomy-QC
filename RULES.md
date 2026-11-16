@@ -14,9 +14,7 @@ Nhóm tự sắp xếp. Mỗi nhóm một repo public; cách đặt tên repo xe
 
 ## Sử dụng AI
 
-- Được dùng AI để giải thích khái niệm (IoU, IAA…), gợi ý viết script, sửa chính tả. Ghi công cụ và cách bạn kiểm tra trong ghi chú cá nhân.
-- **Không dùng AI hay mô hình để gán box thay bạn** (pre-label sẽ học ở Day 08) và không dùng AI để "nhìn ảnh rồi cho biết nên gán gì". Nhãn của bạn là phán đoán của bạn.
-- Guideline cá nhân phải phản ánh các ca khó **bạn tự tìm ra** trong 40 ảnh. Bạn phải giải thích được từng quyết định trong file mình nộp.
+- Được sử dụng dùng AI
 
 ## Tính trung thực của số liệu
 

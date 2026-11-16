@@ -1,23 +1,21 @@
 # Thông tin nhóm
 
-- Tên nhóm:
-- Repo bài nộp (URL):
+- Tên nhóm: T068
+- Repo bài nộp (URL): https://github.com/quangkebg123/K5-L23-Day07-NguyenManhQuang-2A202603241-Guideline-Taxonomy-QC
 - Commit chốt bài (hash):
-- Số thành viên: …  → số người gán mỗi ảnh (K): …
+- Số thành viên: 1 → số người gán mỗi ảnh 40 ảnh
 
-| STT | MSHV | Họ và tên | Lớp (L2 / L3 / khác) | Tài khoản GitHub |
-|---|---|---|---|---|
-| 1 | | | | |
-| 2 | | | | |
-| 3 | | | | |
+| STT | MSHV        | Họ và tên         | Lớp (L2 / L3 / khác) | Tài khoản GitHub |
+| --- | ----------- | ----------------- | -------------------- | ---------------- |
+| 1   | 2A202603241 | Nguyen Manh Quang | L2                   | quangkebg123     |
 
 Danh sách trên phải khớp dòng tiêu đề của `README.md` (đã đổi theo [SUBMISSION.md](SUBMISSION.md)) và `--members` đã dùng ở `scripts/split_assign.py`.
 
 ## Phân công (mỗi người làm gì ngoài phần gán nhãn)
 
-| MSHV | Phụ trách thêm |
-|---|---|
-| | (ví dụ: chạy split_assign, viết phần ca khó của guideline v1.0, người kiểm QC chính, ...) |
+| MSHV        | Phụ trách thêm  |
+| ----------- | --------------- |
+| 2A202603241 | làm phần REPORT |
 
 ## Kết quả tóm tắt (điền cuối bài)
 
